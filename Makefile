@@ -1,4 +1,4 @@
-.PHONY: up down logs test lint format
+.PHONY: up down logs test lint format migrate makemigration
 
 # Create .env from the template on first run so the stack works from a clean checkout.
 .env:
@@ -21,3 +21,9 @@ lint: ## Lint the codebase
 
 format: ## Auto-format the codebase
 	docker compose run --rm --no-deps api ruff format .
+
+migrate: .env ## Apply all pending migrations (upgrade head)
+	docker compose run --rm api alembic upgrade head
+
+makemigration: .env ## Autogenerate a migration: make makemigration m="message"
+	docker compose run --rm api alembic revision --autogenerate -m "$(m)"
