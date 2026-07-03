@@ -30,11 +30,38 @@ Other targets: `make down`, `make logs`, `make test`, `make lint`, `make format`
 app/
   api/       # FastAPI routers, dependencies, Pydantic schemas (health only for now)
   core/      # config, async DB session, Redis client
-  models/    # SQLAlchemy models          (later)
-  services/  # application logic          (later)
+  models/    # SQLAlchemy models (organizations, users, documents, steps, webhooks)
+  services/  # application logic — status.py (pipeline state machine)
   workers/   # async tasks / pipeline      (later)
   events/    # Redis pub/sub for real-time (later)
 ```
+
+## Data model
+
+```
+organizations (id, name, created_at)                     # tenant boundary
+users          (id, organization_id→, email·, hashed_password, created_at)
+documents      (id, organization_id→, uploaded_by→, filename, storage_path,
+                status‡, partner_job_id·, created_at, updated_at)   # (org_id, created_at DESC) index
+processing_steps (id, document_id→, name‡, status‡, attempts, error,
+                started_at, finished_at, …)              # unique (document_id, name)
+webhook_events (id, job_id, payload jsonb, signature_valid, received_at)  # append-only audit
+```
+`→` FK · `·` unique · `‡` native Postgres enum.
+
+The document status is **derived**, never stored as truth by the ORM: the state
+machine in [`app/services/status.py`](app/services/status.py) (pure, no DB/HTTP —
+exhaustively unit-tested) is the single source of the pipeline rules.
+
+**Webhook dedup:** `webhook_events` is an append-only audit trail, so `job_id`
+is indexed but **not unique** — a partner may legitimately re-POST the same
+`job_id` (retries, or a status progression). Idempotency is enforced in the
+handler; the strong "one partner job per document" guarantee lives on the unique
+`documents.partner_job_id`.
+
+**Migrations** (Alembic, async) run at API container startup (`alembic upgrade
+head` before uvicorn). Fine here; in production this should be a dedicated
+migration job run once before rollout, not on every replica start.
 
 ## Testing & CI
 

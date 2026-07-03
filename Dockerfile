@@ -20,6 +20,8 @@ RUN uv sync --frozen
 # so hot reload picks up local edits.
 COPY app ./app
 COPY tests ./tests
+COPY alembic ./alembic
+COPY alembic.ini ./
 
 EXPOSE 8000
 
