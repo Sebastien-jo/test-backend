@@ -1,7 +1,7 @@
 """File storage abstraction.
 
 Callers speak only in opaque logical *keys* (never filesystem paths), so the
-local backend can be swapped for S3 without touching services or endpoints.
+local backend can be swapped for another storage without touching services or endpoints.
 """
 
 import unicodedata
@@ -26,7 +26,6 @@ class FileStorage(Protocol):
 
 class StorageBackend(StrEnum):
     LOCAL = "local"
-    S3 = "s3"
 
 
 def sanitize_filename(filename: str) -> str:
@@ -87,6 +86,4 @@ def get_storage() -> FileStorage:
     """
     if settings.storage_backend == StorageBackend.LOCAL:
         return LocalFileStorage(Path(settings.storage_path))
-    # An S3 backend (presigned upload URLs, streaming) would slot in here without
-    # changing any caller — that is the point of the Protocol.
     raise NotImplementedError(f"Unsupported storage backend: {settings.storage_backend!r}")

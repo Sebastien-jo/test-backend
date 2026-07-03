@@ -17,7 +17,12 @@ from app.api.schemas import (
 from app.core.config import settings
 from app.core.db import get_db
 from app.services import documents as documents_service
-from app.services.documents import EmptyFileError, FileTooLargeError, compute_status
+from app.services.documents import (
+    EmptyFileError,
+    FileTooLargeError,
+    UnsupportedFileTypeError,
+    compute_status,
+)
 from app.services.storage import FileStorage, get_storage
 
 router = APIRouter(prefix="/documents", tags=["documents"])
@@ -33,13 +38,8 @@ async def upload_document(
     storage: StorageDep,
     file: Annotated[UploadFile, File()],
 ) -> DocumentCreatedResponse:
-    """Upload a file for processing. The document is created in `pending`; the
+    """Upload a PDF for processing. The document is created in `pending`; the
     pipeline is not triggered in this phase.
-
-    File-type policy: we do not restrict the MIME type (the assignment mentions
-    PDFs but does not require it, and the pipeline is mocked). We only reject
-    empty files and files above the configured size limit. In production we would
-    additionally validate the declared content type and magic bytes.
     """
     # Early 413 using the declared size, before reading the body into memory.
     if file.size is not None and file.size > settings.max_upload_bytes:
@@ -51,6 +51,10 @@ async def upload_document(
         raise HTTPException(status.HTTP_400_BAD_REQUEST, "Uploaded file is empty") from None
     except FileTooLargeError:
         raise HTTPException(status.HTTP_413_REQUEST_ENTITY_TOO_LARGE, "File too large") from None
+    except UnsupportedFileTypeError:
+        raise HTTPException(
+            status.HTTP_415_UNSUPPORTED_MEDIA_TYPE, "Only PDF files are accepted"
+        ) from None
 
     return DocumentCreatedResponse(
         id=document.id,

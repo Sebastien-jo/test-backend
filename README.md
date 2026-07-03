@@ -102,10 +102,10 @@ migration job run once before rollout, not on every replica start.
 All endpoints require a bearer token and are scoped to the caller's org.
 
 - `POST /documents` — multipart upload; creates the document in `pending` with its
-  4 pipeline steps (no processing triggered yet). Rejects empty files and files
-  over `MAX_UPLOAD_BYTES` (413). File **type is not restricted** (assignment
-  mentions PDFs but doesn't require it, pipeline is mocked); in prod we'd check
-  content-type + magic bytes.
+  4 pipeline steps (no processing triggered yet). **PDF only**, validated on the
+  file's magic bytes (`%PDF-`), not the spoofable Content-Type → 415 otherwise.
+  Empty files → 400, files over `MAX_UPLOAD_BYTES` → 413. The allowlist would
+  widen as more formats are ingested.
 - `GET /documents/{id}` — detail with steps; status is **derived** via
   `status.py`. Missing *or* another org's document → **404** (never 403 — don't
   reveal another tenant's resources).
@@ -117,8 +117,7 @@ All endpoints require a bearer token and are scoped to the caller's org.
 on it, and storage keys are `{org_id}/{doc_id}/{filename}`.
 
 **Storage** is a 3-method `FileStorage` Protocol (`save`/`open`/`delete`) over
-opaque keys — `LocalFileStorage` (path-traversal-guarded) for now; S3 with
-presigned upload URLs in prod slots in behind the same Protocol.
+opaque keys — `LocalFileStorage` (path-traversal-guarded) for now.
 
 ## Testing & CI
 

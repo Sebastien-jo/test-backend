@@ -19,6 +19,7 @@ from app.main import app
 from app.models import Document, ProcessingStep, User
 from app.services.documents import (
     EmptyFileError,
+    UnsupportedFileTypeError,
     create_document,
     get_document,
     list_documents,
@@ -136,7 +137,7 @@ async def test_create_document_deletes_file_when_commit_fails() -> None:
     storage, db, user = FakeStorage(), FakeCommitSession(fail_commit=True), _user()
 
     with pytest.raises(RuntimeError):
-        await create_document(db, user, FakeUpload("x.pdf", b"data"), storage)
+        await create_document(db, user, FakeUpload("x.pdf", b"%PDF-1.4 data"), storage)
 
     # File was written then removed on rollback — no orphan blob.
     assert len(storage.deleted) == 1
@@ -146,6 +147,13 @@ async def test_create_document_deletes_file_when_commit_fails() -> None:
 async def test_create_document_rejects_empty_file() -> None:
     with pytest.raises(EmptyFileError):
         await create_document(FakeCommitSession(), _user(), FakeUpload("e.pdf", b""), FakeStorage())
+
+
+async def test_create_document_rejects_non_pdf() -> None:
+    with pytest.raises(UnsupportedFileTypeError):
+        await create_document(
+            FakeCommitSession(), _user(), FakeUpload("notes.txt", b"just text"), FakeStorage()
+        )
 
 
 # --- org scoping (multi-tenant invariant) -----------------------------------
@@ -224,7 +232,7 @@ async def test_upload_success_returns_201_pending() -> None:
     try:
         async with await _client() as client:
             response = await client.post(
-                "/documents", files={"file": ("report.pdf", b"%PDF data", "application/pdf")}
+                "/documents", files={"file": ("report.pdf", b"%PDF-1.4 data", "application/pdf")}
             )
     finally:
         app.dependency_overrides.clear()
@@ -234,6 +242,21 @@ async def test_upload_success_returns_201_pending() -> None:
     assert body["filename"] == "report.pdf"
     assert body["status"] == "pending"
     assert body["id"] and body["created_at"]
+
+
+async def test_upload_non_pdf_returns_415() -> None:
+    app.dependency_overrides[get_current_user] = _user
+    app.dependency_overrides[get_db] = FakeCommitSession
+    app.dependency_overrides[get_storage] = FakeStorage
+    try:
+        async with await _client() as client:
+            response = await client.post(
+                "/documents", files={"file": ("notes.txt", b"plain text", "text/plain")}
+            )
+    finally:
+        app.dependency_overrides.clear()
+
+    assert response.status_code == 415
 
 
 async def test_list_documents_returns_items_with_uploader_and_status() -> None:

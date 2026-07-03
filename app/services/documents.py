@@ -43,6 +43,13 @@ class FileTooLargeError(DocumentError):
     pass
 
 
+class UnsupportedFileTypeError(DocumentError):
+    pass
+
+
+_PDF_MAGIC = b"%PDF-"
+
+
 def compute_status(document: Document) -> DocumentStatus:
     """Derive the document status from its steps (single source of truth).
 
@@ -69,10 +76,11 @@ async def create_document(
         raise EmptyFileError
     if len(content) > settings.max_upload_bytes:
         raise FileTooLargeError
+    if not content.startswith(_PDF_MAGIC):
+        raise UnsupportedFileTypeError
 
     original_filename = upload.filename or "unnamed"
     document_id = uuid.uuid4()
-    # Tenant isolation is reflected in the storage key layout.
     key = f"{current_user.organization_id}/{document_id}/{sanitize_filename(original_filename)}"
 
     await storage.save(key, content)
@@ -119,11 +127,7 @@ async def list_documents(
     limit: int,
     offset: int,
 ) -> Sequence[Document]:
-    """List the caller's organization documents, newest first, paginated.
-
-    Uploader (many-to-one) is joined and steps (one-to-many) are selectin-loaded
-    to avoid N+1 while computing the derived status and showing the uploader.
-    """
+    """List the caller's organization documents, newest first, paginated."""
     stmt = (
         select(Document)
         .where(Document.organization_id == current_user.organization_id)
