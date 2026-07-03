@@ -22,18 +22,33 @@ Then:
 `GET /health` actively probes Postgres (`SELECT 1`) and Redis (`PING`) and
 returns 503 if either is down.
 
-Other targets: `make down`, `make logs`, `make test`, `make lint`, `make format`.
+### Log in via Swagger (30 seconds)
+
+The stack auto-seeds two organizations with one user each:
+
+| Organization | Email             | Password      |
+| ------------ | ----------------- | ------------- |
+| Acme         | `alice@acme.test` | `password123` |
+| Globex       | `bob@globex.test` | `password123` |
+
+In [Swagger](http://localhost:8000/docs): click **Authorize**, enter one of the
+emails as *username* + its password, **Authorize** → protected endpoints (e.g.
+`GET /auth/me`) now carry the token automatically.
+
+Other targets: `make down`, `make logs`, `make test`, `make lint`, `make format`,
+`make migrate`, `make seed`.
 
 ## Project structure
 
 ```
 app/
-  api/       # FastAPI routers, dependencies, Pydantic schemas (health only for now)
-  core/      # config, async DB session, Redis client
+  api/       # routers (health, auth), deps.py (get_current_user), Pydantic schemas
+  core/      # config, async DB session, Redis client, security (hashing + JWT)
   models/    # SQLAlchemy models (organizations, users, documents, steps, webhooks)
   services/  # application logic — status.py (pipeline state machine)
   workers/   # async tasks / pipeline      (later)
   events/    # Redis pub/sub for real-time (later)
+scripts/     # seed.py (idempotent demo data, runs at startup)
 ```
 
 ## Data model
@@ -62,6 +77,25 @@ handler; the strong "one partner job per document" guarantee lives on the unique
 **Migrations** (Alembic, async) run at API container startup (`alembic upgrade
 head` before uvicorn). Fine here; in production this should be a dedicated
 migration job run once before rollout, not on every replica start.
+
+## Authentication & multi-tenancy
+
+- **Flow:** `POST /auth/login` (email + password) returns a **JWT** (HS256,
+  60 min, configurable via `JWT_EXPIRES_MINUTES`) with claims `sub` (user id) and
+  `org` (organization id). Protected endpoints depend on `get_current_user`
+  ([`app/api/deps.py`](app/api/deps.py)), which verifies the token and re-checks
+  the user still exists.
+- **Passwords:** hashed with **Argon2id** (`app/core/security.py`) — current
+  OWASP recommendation, no bcrypt 72-byte limit.
+- **Tenant invariant:** the `organization_id` **always** comes from the signed
+  token, never from a client parameter. This is what isolates one organization's
+  data from another; every future query scopes on it.
+- **No user enumeration:** login returns the same 401 whether the email is
+  unknown or the password is wrong (timing equalized).
+- **Seed credentials:** see [Getting started](#log-in-via-swagger-30-seconds).
+- **Prod note:** access-token only, no refresh token (out of scope). In
+  production we'd add short-lived access + rotating refresh tokens (httpOnly
+  cookie or secure store) and token revocation.
 
 ## Testing & CI
 

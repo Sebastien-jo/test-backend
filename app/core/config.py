@@ -19,5 +19,8 @@ class Settings(BaseSettings):
     jwt_secret: str
     partner_hmac_secret: str
 
+    # Access-token lifetime in minutes.
+    jwt_expires_minutes: int = 60
+
 
 settings = Settings()

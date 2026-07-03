@@ -1,4 +1,4 @@
-.PHONY: up down logs test lint format migrate makemigration
+.PHONY: up down logs test lint format migrate makemigration seed
 
 # Create .env from the template on first run so the stack works from a clean checkout.
 .env:
@@ -27,3 +27,6 @@ migrate: .env ## Apply all pending migrations (upgrade head)
 
 makemigration: .env ## Autogenerate a migration: make makemigration m="message"
 	docker compose run --rm api alembic revision --autogenerate -m "$(m)"
+
+seed: .env ## Seed demo organizations and users (idempotent)
+	docker compose run --rm api python -m scripts.seed
