@@ -20,6 +20,7 @@ RUN uv sync --frozen
 # so hot reload picks up local edits.
 COPY app ./app
 COPY tests ./tests
+COPY scripts ./scripts
 COPY alembic ./alembic
 COPY alembic.ini ./
 

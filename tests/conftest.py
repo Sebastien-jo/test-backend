@@ -11,5 +11,6 @@ import os
 
 os.environ.setdefault("DATABASE_URL", "postgresql+asyncpg://test:test@localhost:5432/test")
 os.environ.setdefault("REDIS_URL", "redis://localhost:6379/0")
-os.environ.setdefault("JWT_SECRET", "test-secret")
-os.environ.setdefault("PARTNER_HMAC_SECRET", "test-secret")
+# >= 32 bytes so PyJWT does not warn about a weak HMAC key (RFC 7518).
+os.environ.setdefault("JWT_SECRET", "test-secret-please-change-in-real-envs")
+os.environ.setdefault("PARTNER_HMAC_SECRET", "test-partner-hmac-secret-change-me")
