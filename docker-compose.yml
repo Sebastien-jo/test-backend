@@ -31,10 +31,20 @@ services:
 
   worker:
     build: .
-    command: sleep infinity
+    # Thread pool: the mocked steps are time.sleep (IO-bound-like), so a thread
+    # pool holds far more concurrent tasks than prefork at equal memory.
+    command: >-
+      celery -A app.workers.celery_app worker
+      --pool=threads --concurrency=${CELERY_WORKER_CONCURRENCY:-32} --loglevel=info
     env_file: .env
     volumes:
       - ./app:/app/app
+    healthcheck:
+      test: ["CMD-SHELL", "celery -A app.workers.celery_app inspect ping -t 5 | grep -q pong"]
+      interval: 15s
+      timeout: 10s
+      retries: 5
+      start_period: 20s
     depends_on:
       db:
         condition: service_healthy

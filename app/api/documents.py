@@ -12,6 +12,7 @@ from app.api.schemas import (
     DocumentDetailResponse,
     DocumentListItem,
     DocumentListResponse,
+    StepAttemptSchema,
     StepSchema,
 )
 from app.core.config import settings
@@ -20,15 +21,19 @@ from app.services import documents as documents_service
 from app.services.documents import (
     EmptyFileError,
     FileTooLargeError,
+    PipelineEnqueuer,
     UnsupportedFileTypeError,
     compute_status,
 )
+from app.services.status import StepStatus
 from app.services.storage import FileStorage, get_storage
+from app.workers.pipeline import get_pipeline_enqueuer
 
 router = APIRouter(prefix="/documents", tags=["documents"])
 
 DbDep = Annotated[AsyncSession, Depends(get_db)]
 StorageDep = Annotated[FileStorage, Depends(get_storage)]
+EnqueuerDep = Annotated[PipelineEnqueuer, Depends(get_pipeline_enqueuer)]
 
 
 @router.post("", status_code=status.HTTP_201_CREATED, response_model=DocumentCreatedResponse)
@@ -36,6 +41,7 @@ async def upload_document(
     current_user: CurrentUserDep,
     db: DbDep,
     storage: StorageDep,
+    enqueue: EnqueuerDep,
     file: Annotated[UploadFile, File()],
 ) -> DocumentCreatedResponse:
     """Upload a PDF for processing. The document is created in `pending`; the
@@ -46,7 +52,7 @@ async def upload_document(
         raise HTTPException(status.HTTP_413_REQUEST_ENTITY_TOO_LARGE, "File too large")
 
     try:
-        document = await documents_service.create_document(db, current_user, file, storage)
+        document = await documents_service.create_document(db, current_user, file, storage, enqueue)
     except EmptyFileError:
         raise HTTPException(status.HTTP_400_BAD_REQUEST, "Uploaded file is empty") from None
     except FileTooLargeError:
@@ -85,9 +91,23 @@ async def get_document(
                 name=step.name,
                 status=step.status,
                 attempts=step.attempts,
-                error=step.error,
                 started_at=step.started_at,
                 finished_at=step.finished_at,
+                # Surface the last error only once the step has definitively failed.
+                error=(
+                    step.attempt_history[-1].error
+                    if step.status is StepStatus.FAILED and step.attempt_history
+                    else None
+                ),
+                attempt_history=[
+                    StepAttemptSchema(
+                        attempt=attempt.attempt,
+                        error=attempt.error,
+                        started_at=attempt.started_at,
+                        finished_at=attempt.finished_at,
+                    )
+                    for attempt in step.attempt_history
+                ],
             )
             for step in document.steps
         ],

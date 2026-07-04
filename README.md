@@ -46,7 +46,7 @@ app/
   core/      # config, async DB session, Redis client, security (hashing + JWT)
   models/    # SQLAlchemy models (organizations, users, documents, steps, webhooks)
   services/  # logic — status.py (state machine), documents.py, storage.py
-  workers/   # async tasks / pipeline      (later)
+  workers/   # Celery pipeline — celery_app, steps (mocks), pipeline, transitions
   events/    # Redis pub/sub for real-time (later)
 scripts/     # seed.py (idempotent demo data, runs at startup)
 ```
@@ -58,11 +58,17 @@ organizations (id, name, created_at)                     # tenant boundary
 users          (id, organization_id→, email·, hashed_password, created_at)
 documents      (id, organization_id→, uploaded_by→, filename, storage_path,
                 status‡, partner_job_id·, created_at, updated_at)   # (org_id, created_at DESC) index
-processing_steps (id, document_id→, name‡, status‡, attempts, error,
-                started_at, finished_at, …)              # unique (document_id, name)
+processing_steps (id, document_id→, name‡, status‡, attempts, result jsonb,
+                started_at, finished_at)                 # unique (document_id, name)
+step_attempts  (id, step_id→, attempt, error, started_at, finished_at, created_at)  # append-only
 webhook_events (id, job_id, payload jsonb, signature_valid, received_at)  # append-only audit
 ```
 `→` FK · `·` unique · `‡` native Postgres enum.
+
+Per-attempt errors live in **`step_attempts`** (append-only, one row per
+execution — race-free under at-least-once, unlike a single `error` column). The
+step keeps only its summary status/attempts; the API surfaces the full history
+and, for a *failed* step, its last error.
 
 The document status is **derived**, never stored as truth by the ORM: the state
 machine in [`app/services/status.py`](app/services/status.py) (pure, no DB/HTTP —
@@ -118,6 +124,50 @@ on it, and storage keys are `{org_id}/{doc_id}/{filename}`.
 
 **Storage** is a 3-method `FileStorage` Protocol (`save`/`open`/`delete`) over
 opaque keys — `LocalFileStorage` (path-traversal-guarded) for now.
+
+## Pipeline orchestration
+
+Upload enqueues a Celery DAG (the document stays `pending` until it runs):
+
+```
+chain( ocr, chord( group(metadata, chunking), external_call ) )
+```
+`ocr` first; `metadata`/`chunking` in parallel; `external_call` last → the
+document reaches `waiting_partner` (the inbound webhook that flips it to `ready`
+is the next phase).
+
+- **Why Celery:** native retries + exponential backoff and `chord` for the
+  metadata/chunking fan-in — orchestration we'd otherwise hand-roll. It's also
+  the team's stack.
+- **Thread pool** (`--pool=threads`, concurrency 32): the steps are `time.sleep`
+  (IO-bound-like), so threads hold far more concurrent tasks than prefork at
+  equal memory.
+- **Results in the DB** (`processing_steps.result` JSONB): each task writes its
+  output; downstream tasks read upstream results from the DB, not from Celery
+  arguments — retries/redelivery make argument passing fragile, and the DB makes
+  every task independently replayable. `external_call`'s job_id is also copied to
+  `documents.partner_job_id`.
+- **Retries:** `autoretry_for` the mock exceptions, `retry_backoff` + jitter,
+  `max_retries=5`. With ~1/3 failure per attempt, 6 attempts give
+  `(1/3)**6 ≈ 0.14%` failure → **>99.8%** success per step.
+- **Chord on failure (verified):** if `metadata` *or* `chunking` fails
+  permanently, the chord body does not fire — `external_call` stays `pending` and
+  the derived document status is `failed`.
+- **Single transition helper** (`app/workers/transitions.py`): every step change
+  goes through it (validate → timestamps/result/error → recompute document
+  status). It's the one place phase 7 will hook real-time events.
+- **Enqueue after commit:** the pipeline is enqueued only once the document is
+  committed (the worker must not look up an invisible row). Limitation: if the
+  enqueue fails after the commit, the document is a `pending` orphan — prod fix is
+  a transactional outbox or a periodic sweeper.
+
+**Idempotency:** `acks_late` + `reject_on_worker_lost` give at-least-once
+execution, so a step can be delivered/run more than once (redelivery, or
+concurrent duplicate delivery). The transition helper makes this safe: already
+terminal steps are skipped, a terminal outcome (`done`/`failed`) is authoritative
+from any active state so a success is never dropped, and any remaining illegal
+move (e.g. a laggard retry after completion) is a logged no-op rather than a hard
+error that would break the chord.
 
 ## Testing & CI
 

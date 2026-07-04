@@ -8,6 +8,7 @@ from app.models.base import Base
 from app.models.document import Document
 from app.models.organization import Organization
 from app.models.processing_step import ProcessingStep
+from app.models.step_attempt import StepAttempt
 from app.models.user import User
 from app.models.webhook_event import WebhookEvent
 
@@ -16,6 +17,7 @@ __all__ = [
     "Document",
     "Organization",
     "ProcessingStep",
+    "StepAttempt",
     "User",
     "WebhookEvent",
 ]

@@ -15,13 +15,24 @@ class DocumentCreatedResponse(BaseModel):
     created_at: datetime
 
 
+class StepAttemptSchema(BaseModel):
+    attempt: int
+    error: str | None  # null = this attempt succeeded
+    started_at: datetime | None
+    finished_at: datetime | None
+
+
 class StepSchema(BaseModel):
     name: StepName
     status: StepStatus
     attempts: int
-    error: str | None
     started_at: datetime | None
     finished_at: datetime | None
+    # Last error, surfaced only once the step has definitively failed. While a
+    # step is still retrying or has succeeded, the top-level error stays null;
+    # the per-attempt errors are always available in `attempt_history`.
+    error: str | None
+    attempt_history: list[StepAttemptSchema]
 
 
 class DocumentDetailResponse(BaseModel):

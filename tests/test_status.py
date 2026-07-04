@@ -107,6 +107,9 @@ def test_derive_document_status(
         (RUNNING, RETRYING),
         (RUNNING, FAILED),
         (RETRYING, RUNNING),
+        # A terminal outcome is authoritative from an active state (concurrency).
+        (RETRYING, DONE),
+        (RETRYING, FAILED),
     ],
 )
 def test_valid_transitions(from_status: StepStatus, to_status: StepStatus) -> None:
@@ -120,8 +123,6 @@ def test_valid_transitions(from_status: StepStatus, to_status: StepStatus) -> No
         (PENDING, FAILED),  # cannot fail without running
         (PENDING, RETRYING),
         (RUNNING, PENDING),  # no going back
-        (RETRYING, DONE),  # must re-run before completing
-        (RETRYING, FAILED),
         (DONE, RUNNING),  # terminal
         (DONE, FAILED),  # terminal
         (FAILED, RUNNING),  # terminal
