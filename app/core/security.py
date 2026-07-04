@@ -29,7 +29,6 @@ def verify_password(password: str, hashed_password: str) -> bool:
     try:
         return _password_hasher.verify(hashed_password, password)
     except Argon2Error, InvalidHashError:
-        # Wrong password (Argon2Error) or malformed hash (InvalidHashError).
         return False
 
 

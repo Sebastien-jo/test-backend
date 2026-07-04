@@ -42,10 +42,10 @@ Other targets: `make down`, `make logs`, `make test`, `make lint`, `make format`
 
 ```
 app/
-  api/       # routers (health, auth), deps.py (get_current_user), Pydantic schemas
+  api/       # routers (health, auth, documents), deps.py, schemas.py
   core/      # config, async DB session, Redis client, security (hashing + JWT)
   models/    # SQLAlchemy models (organizations, users, documents, steps, webhooks)
-  services/  # application logic — status.py (pipeline state machine)
+  services/  # logic — status.py (state machine), documents.py, storage.py
   workers/   # async tasks / pipeline      (later)
   events/    # Redis pub/sub for real-time (later)
 scripts/     # seed.py (idempotent demo data, runs at startup)
@@ -96,6 +96,28 @@ migration job run once before rollout, not on every replica start.
 - **Prod note:** access-token only, no refresh token (out of scope). In
   production we'd add short-lived access + rotating refresh tokens (httpOnly
   cookie or secure store) and token revocation.
+
+## Documents API
+
+All endpoints require a bearer token and are scoped to the caller's org.
+
+- `POST /documents` — multipart upload; creates the document in `pending` with its
+  4 pipeline steps (no processing triggered yet). **PDF only**, validated on the
+  file's magic bytes (`%PDF-`), not the spoofable Content-Type → 415 otherwise.
+  Empty files → 400, files over `MAX_UPLOAD_BYTES` → 413. The allowlist would
+  widen as more formats are ingested.
+- `GET /documents/{id}` — detail with steps; status is **derived** via
+  `status.py`. Missing *or* another org's document → **404** (never 403 — don't
+  reveal another tenant's resources).
+- `GET /documents` — org's documents, `created_at DESC`, `limit`/`offset`
+  (default 20, max 100); each item: filename, uploader email, derived status.
+  Uploader joined + steps selectin-loaded (no N+1).
+
+**Tenant isolation:** `organization_id` comes from the token; every query filters
+on it, and storage keys are `{org_id}/{doc_id}/{filename}`.
+
+**Storage** is a 3-method `FileStorage` Protocol (`save`/`open`/`delete`) over
+opaque keys — `LocalFileStorage` (path-traversal-guarded) for now.
 
 ## Testing & CI
 

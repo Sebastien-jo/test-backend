@@ -16,6 +16,7 @@ services:
       - ./scripts:/app/scripts
       - ./alembic:/app/alembic
       - ./alembic.ini:/app/alembic.ini
+      - uploads_data:/data/uploads
     depends_on:
       db:
         condition: service_healthy
@@ -68,3 +69,4 @@ services:
 
 volumes:
   postgres_data:
+  uploads_data:

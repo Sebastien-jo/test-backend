@@ -22,5 +22,10 @@ class Settings(BaseSettings):
     # Access-token lifetime in minutes.
     jwt_expires_minutes: int = 60
 
+    storage_backend: str = "local"
+    storage_path: str = "/data/uploads"
+    # Max accepted upload size, in bytes (default 20 MiB).
+    max_upload_bytes: int = 20 * 1024 * 1024
+
 
 settings = Settings()
