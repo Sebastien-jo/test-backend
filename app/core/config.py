@@ -27,5 +27,9 @@ class Settings(BaseSettings):
     # Max accepted upload size, in bytes (default 20 MiB).
     max_upload_bytes: int = 20 * 1024 * 1024
 
+    celery_broker_url: str = "redis://redis:6379/0"
+    celery_result_backend: str = "redis://redis:6379/1"
+    celery_worker_concurrency: int = 32
+
 
 settings = Settings()

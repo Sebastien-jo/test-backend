@@ -66,13 +66,10 @@ def derive_document_status(
     return DocumentStatus.PROCESSING
 
 
-# Allowed step transitions. Terminal states (DONE, FAILED) have no outgoing edges;
-# a failure retriable further goes RUNNING -> RETRYING -> RUNNING, and a definitive
-# failure (retries exhausted) goes RUNNING -> FAILED.
 _ALLOWED_TRANSITIONS: dict[StepStatus, frozenset[StepStatus]] = {
     StepStatus.PENDING: frozenset({StepStatus.RUNNING}),
     StepStatus.RUNNING: frozenset({StepStatus.DONE, StepStatus.RETRYING, StepStatus.FAILED}),
-    StepStatus.RETRYING: frozenset({StepStatus.RUNNING}),
+    StepStatus.RETRYING: frozenset({StepStatus.RUNNING, StepStatus.DONE, StepStatus.FAILED}),
     StepStatus.DONE: frozenset(),
     StepStatus.FAILED: frozenset(),
 }

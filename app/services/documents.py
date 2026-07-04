@@ -7,7 +7,7 @@ enforced here so endpoints cannot forget it.
 from __future__ import annotations
 
 import uuid
-from collections.abc import Sequence
+from collections.abc import Awaitable, Callable, Sequence
 from typing import TYPE_CHECKING
 
 from fastapi import UploadFile
@@ -29,6 +29,9 @@ if TYPE_CHECKING:
     # Type-only import: the service reads attributes off CurrentUser but never
     # constructs it, so we avoid a runtime services -> api dependency.
     from app.api.deps import CurrentUser
+
+# Enqueues the processing pipeline for a committed document.
+PipelineEnqueuer = Callable[[uuid.UUID], Awaitable[None]]
 
 
 class DocumentError(Exception):
@@ -65,8 +68,10 @@ async def create_document(
     current_user: CurrentUser,
     upload: UploadFile,
     storage: FileStorage,
+    enqueue: PipelineEnqueuer,
 ) -> Document:
-    """Persist the uploaded file and its document + step rows atomically.
+    """Persist the uploaded file and its document + step rows atomically, then
+    enqueue the pipeline.
 
     The file is written first; if the DB commit fails, the file is deleted so we
     never leave an orphan blob or a row without its blob.
@@ -101,6 +106,7 @@ async def create_document(
         raise
 
     await db.refresh(document)
+    await enqueue(document.id)
     return document
 
 
@@ -116,7 +122,7 @@ async def get_document(
             Document.id == document_id,
             Document.organization_id == current_user.organization_id,
         )
-        .options(selectinload(Document.steps))
+        .options(selectinload(Document.steps).selectinload(ProcessingStep.attempt_history))
     )
     return await db.scalar(stmt)
 

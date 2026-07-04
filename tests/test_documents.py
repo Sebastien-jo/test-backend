@@ -26,6 +26,21 @@ from app.services.documents import (
 )
 from app.services.status import DocumentStatus, StepName, StepStatus
 from app.services.storage import get_storage
+from app.workers.pipeline import get_pipeline_enqueuer
+
+
+class RecordingEnqueue:
+    """Fake pipeline enqueuer that records the document ids it was called with."""
+
+    def __init__(self) -> None:
+        self.calls: list[uuid.UUID] = []
+
+    async def __call__(self, document_id: uuid.UUID) -> None:
+        self.calls.append(document_id)
+
+
+async def _noop_enqueue(document_id: uuid.UUID) -> None:
+    return None
 
 
 class FakeStorage:
@@ -116,8 +131,11 @@ def _user() -> CurrentUser:
 
 async def test_create_document_persists_file_and_pending_rows() -> None:
     storage, db, user = FakeStorage(), FakeCommitSession(), _user()
+    enqueue = RecordingEnqueue()
 
-    document = await create_document(db, user, FakeUpload("My Report.pdf", b"%PDF-1.4"), storage)
+    document = await create_document(
+        db, user, FakeUpload("My Report.pdf", b"%PDF-1.4"), storage, enqueue
+    )
 
     assert document.status is DocumentStatus.PENDING
     assert document.organization_id == user.organization_id
@@ -126,6 +144,8 @@ async def test_create_document_persists_file_and_pending_rows() -> None:
     assert {s.name for s in document.steps} == set(StepName)
     assert all(s.status is StepStatus.PENDING for s in document.steps)
     assert db.committed is True
+    # Pipeline enqueued once, after the commit, with the new document id.
+    assert enqueue.calls == [document.id]
 
     # Stored under an org/doc-prefixed key (tenant isolation reflected in keys).
     (key,) = storage.saved
@@ -135,24 +155,32 @@ async def test_create_document_persists_file_and_pending_rows() -> None:
 
 async def test_create_document_deletes_file_when_commit_fails() -> None:
     storage, db, user = FakeStorage(), FakeCommitSession(fail_commit=True), _user()
+    enqueue = RecordingEnqueue()
 
     with pytest.raises(RuntimeError):
-        await create_document(db, user, FakeUpload("x.pdf", b"%PDF-1.4 data"), storage)
+        await create_document(db, user, FakeUpload("x.pdf", b"%PDF-1.4 data"), storage, enqueue)
 
-    # File was written then removed on rollback — no orphan blob.
+    # File was written then removed on rollback — no orphan blob, nothing enqueued.
     assert len(storage.deleted) == 1
     assert storage.saved == {}
+    assert enqueue.calls == []
 
 
 async def test_create_document_rejects_empty_file() -> None:
     with pytest.raises(EmptyFileError):
-        await create_document(FakeCommitSession(), _user(), FakeUpload("e.pdf", b""), FakeStorage())
+        await create_document(
+            FakeCommitSession(), _user(), FakeUpload("e.pdf", b""), FakeStorage(), _noop_enqueue
+        )
 
 
 async def test_create_document_rejects_non_pdf() -> None:
     with pytest.raises(UnsupportedFileTypeError):
         await create_document(
-            FakeCommitSession(), _user(), FakeUpload("notes.txt", b"just text"), FakeStorage()
+            FakeCommitSession(),
+            _user(),
+            FakeUpload("notes.txt", b"just text"),
+            FakeStorage(),
+            _noop_enqueue,
         )
 
 
@@ -214,6 +242,7 @@ async def test_upload_empty_file_returns_400() -> None:
     app.dependency_overrides[get_current_user] = _user
     app.dependency_overrides[get_db] = FakeCommitSession
     app.dependency_overrides[get_storage] = FakeStorage
+    app.dependency_overrides[get_pipeline_enqueuer] = lambda: _noop_enqueue
     try:
         async with await _client() as client:
             response = await client.post(
@@ -229,6 +258,7 @@ async def test_upload_success_returns_201_pending() -> None:
     app.dependency_overrides[get_current_user] = _user
     app.dependency_overrides[get_db] = FakeCommitSession
     app.dependency_overrides[get_storage] = FakeStorage
+    app.dependency_overrides[get_pipeline_enqueuer] = lambda: _noop_enqueue
     try:
         async with await _client() as client:
             response = await client.post(
@@ -248,6 +278,7 @@ async def test_upload_non_pdf_returns_415() -> None:
     app.dependency_overrides[get_current_user] = _user
     app.dependency_overrides[get_db] = FakeCommitSession
     app.dependency_overrides[get_storage] = FakeStorage
+    app.dependency_overrides[get_pipeline_enqueuer] = lambda: _noop_enqueue
     try:
         async with await _client() as client:
             response = await client.post(

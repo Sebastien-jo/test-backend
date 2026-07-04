@@ -24,6 +24,14 @@ COPY scripts ./scripts
 COPY alembic ./alembic
 COPY alembic.ini ./
 
+# Run as an unprivileged user (best practice for the API, and Celery refuses to
+# run happily as root). Owns the app dir and the uploads volume mount point.
+RUN groupadd --system app \
+    && useradd --system --gid app --home-dir /home/app --create-home app \
+    && mkdir -p /data/uploads \
+    && chown -R app:app /app /data/uploads
+USER app
+
 EXPOSE 8000
 
 CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000"]
