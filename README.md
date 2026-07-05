@@ -45,10 +45,10 @@ app/
   api/       # routers (health, auth, documents), deps.py, schemas.py
   core/      # config, async DB session, Redis client, security (hashing + JWT)
   models/    # SQLAlchemy models (organizations, users, documents, steps, webhooks)
-  services/  # logic — status.py (state machine), documents.py, storage.py
+  services/  # logic — status.py (state machine), documents.py, storage.py, webhooks.py
   workers/   # Celery pipeline — celery_app, steps (mocks), pipeline, transitions
-  events/    # Redis pub/sub for real-time (later)
-scripts/     # seed.py (idempotent demo data, runs at startup)
+  events/    # publisher.py — Redis pub/sub for real-time (SSE)
+scripts/     # seed.py (runs at startup)
 ```
 
 ## Data model
@@ -205,6 +205,33 @@ document from `waiting_partner` to `ready` (or `failed`).
 
 `/dev/sign-webhook` is gated by `DEV_ENDPOINTS_ENABLED` (true in compose) and
 **must be false in production** — it's a signature oracle.
+
+## Real-time tracking (SSE)
+
+`GET /documents/{id}/events` streams every step/document status change as
+Server-Sent Events (auth'd, 404 cross-tenant like the rest).
+
+**Transport choice** (target: 100k docs/day, 5k concurrent users):
+
+**Architecture.** The two state-change choke-points publish to Redis pub/sub after
+their DB commit — the worker (`transitions.py`, sync client) on each step change,
+the API (`webhooks.py`, async client) on partner confirmation. The SSE endpoint
+subscribes and streams. **One channel per document** (`doc:{id}`): an API instance
+subscribes only to the documents its clients are watching, not a global firehose
+of every tenant — that's what makes it scale.
+
+**Robustness to disconnects.** On (re)connect the endpoint does, in order:
+**(1) subscribe, (2) read the sequence boundary then the DB snapshot, (3) stream**
+events with `event_id >` the boundary. Subscribing *before* the snapshot closes
+the lost-event window; the snapshot **is** the resync, so no server-side event
+history is needed. A per-document `INCR` sequence (not the timestamp) gives a
+total order and feeds `Last-Event-ID`. Heartbeats (`: keepalive`) traverse proxies
+and detect dead connections. Publishing is **best-effort** — Redis down logs a
+warning and never fails the pipeline or webhook; the client resyncs from the DB.
+
+**Scale.** Each SSE connection costs a coroutine + a Redis subscription — cheap;
+one async uvicorn process holds thousands, so 5k concurrent viewers fit in a
+handful of API replicas.
 
 ## Testing & CI
 

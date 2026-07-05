@@ -8,6 +8,8 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.schemas import PartnerWebhookPayload
+from app.core.redis import redis_client
+from app.events import publisher
 from app.models import Document, WebhookEvent
 from app.services.status import DocumentStatus
 
@@ -45,12 +47,17 @@ async def process_webhook(db: AsyncSession, payload: PartnerWebhookPayload) -> N
     if document is None:
         return
 
-    _apply_partner_result(document, payload.status)
+    changed = _apply_partner_result(document, payload.status)
     await db.commit()
 
+    if changed:
+        await publisher.publish_document_update(
+            redis_client, document.id, document_status=document.status
+        )
 
-def _apply_partner_result(document: Document, partner_status: str) -> None:
-    """Document-level transition
+
+def _apply_partner_result(document: Document, partner_status: str) -> bool:
+    """Document-level transition. Returns whether the status actually changed.
 
     Terminal stays terminal: a webhook for an already `ready`/`failed` document is
     a no-op. This is our idempotency (a partner retry re-POSTs the same job_id) and
@@ -58,7 +65,8 @@ def _apply_partner_result(document: Document, partner_status: str) -> None:
     """
     if document.status in (DocumentStatus.READY, DocumentStatus.FAILED):
         logger.info("Webhook no-op: document %s already %s", document.id, document.status)
-        return
+        return False
     document.status = (
         DocumentStatus.READY if partner_status == "completed" else DocumentStatus.FAILED
     )
+    return True
