@@ -38,6 +38,23 @@ emails as *username* + its password, **Authorize** → protected endpoints (e.g.
 Other targets: `make down`, `make logs`, `make test`, `make lint`, `make format`,
 `make migrate`, `make seed`.
 
+### Configuration
+
+`make up` copies `.env.example` → `.env`; every setting is read there (see
+[`app/core/config.py`](app/core/config.py)). The ones that matter:
+
+| Variable | Purpose |
+| --- | --- |
+| `DATABASE_URL` / `REDIS_URL` | Postgres (async) and Redis DSNs |
+| `JWT_SECRET`, `JWT_EXPIRES_MINUTES` | access-token signing key + lifetime (HS256) |
+| `PARTNER_HMAC_SECRET` | shared secret for the inbound webhook HMAC (out-of-band) |
+| `DEV_ENDPOINTS_ENABLED` | exposes `/dev/sign-webhook` — **must be `false` in prod** |
+| `MAX_UPLOAD_BYTES` | upload size cap (default 20 MiB) |
+| `CELERY_WORKER_CONCURRENCY` | worker thread-pool size |
+| `LOG_FORMAT` / `LOG_LEVEL` / `ENVIRONMENT` | `console` locally, `json` in prod ([Observability](#observability)) |
+
+Use real, random secrets outside local dev (e.g. `openssl rand -hex 32`).
+
 ## Project structure
 
 ```
@@ -233,7 +250,21 @@ document from `waiting_partner` to `ready` (or `failed`).
 `GET /documents/{id}/events` streams every step/document status change as
 Server-Sent Events (auth'd, 404 cross-tenant like the rest).
 
-**Transport choice** (target: 100k docs/day, 5k concurrent users):
+**Transport choice.** The need is **unidirectional, server→client** push, which is
+exactly the shape of SSE — the least machinery that fits (judged on the brief's
+four axes: API load, server resources, client complexity, disconnect robustness).
+
+| | Polling | WebSocket | **SSE (chosen)** |
+| --- | --- | --- | --- |
+| **API load** | 5k viewers × ~1 rps of mostly-unchanged status checks | 1 conn/viewer | 1 conn/viewer, a frame only on real change |
+| **Server resources** | a DB hit per poll | duplex conn + per-conn state | a coroutine + a Redis sub — idle-cheap |
+| **Client complexity** | trivial but wasteful | upgrade + ping/pong + reconnect protocol, upstream half unused | `EventSource`: auto-reconnect + `Last-Event-ID` **built in** |
+| **Disconnect robustness** | stateless by accident | manual | native reconnect + resume (below) |
+
+Polling can't hit ~1s latency at 5k viewers without hammering the API/DB for
+nothing; WebSocket's duplex channel is dead weight when nothing flows upstream and
+adds infra (sticky sessions or a shared bus) plus a client protocol. SSE is plain
+HTTP (traverses proxies/LBs, no upgrade), stateless, and horizontally scalable.
 
 **Architecture.** The two state-change choke-points publish to Redis pub/sub after
 their DB commit — the worker (`transitions.py`, sync client) on each step change,
@@ -254,6 +285,29 @@ warning and never fails the pipeline or webhook; the client resyncs from the DB.
 **Scale.** Each SSE connection costs a coroutine + a Redis subscription — cheap;
 one async uvicorn process holds thousands, so 5k concurrent viewers fit in a
 handful of API replicas.
+
+## Scaling to the target
+
+Target (12 months): **100k docs/day ≈ ~1.2 docs/s average** (higher at peak),
+**5k concurrent users**, **p95 pipeline < 2 min**. No single component is near its
+limit; the point is that the knobs are known and staged, not that it's tuned now.
+
+- **DB (Postgres).** Writes are small per-step row updates — 100k docs × ~4 steps ×
+  a few transitions is low hundreds of writes/s at peak, trivial for Postgres. The
+  hot read (listing) rides the `(organization_id, created_at DESC)` index. *Knobs:*
+  PgBouncer for connection pooling, read replicas for listing/snapshots,
+  time-partition the append-only audit tables (`webhook_events`, `step_attempts`).
+- **Async orchestration (Celery).** At ~1.2 docs/s average the broker is idle; the
+  thread pool (IO-bound mock steps) holds many concurrent tasks per worker, and
+  throughput scales by adding worker replicas. **p95 < 2 min:** the critical path is
+  `ocr (≤15s) + max(metadata ≤10s, chunking ≤12s) + external_call (≤5s) ≈ ≤32s` of
+  work, comfortably under budget unless retries stack (rare at >99.8%/step).
+  *Knobs:* per-step queues, DLQ, autoscale on queue depth.
+- **Real-time (SSE).** Per-document channels (no global firehose), stateless async,
+  horizontal — see [Real-time tracking](#real-time-tracking-sse). *Knob past this
+  scale:* one shared Redis subscriber per process instead of one per client.
+- **Tenant isolation.** `organization_id` from the JWT, an indexed filter on every
+  query — no cross-tenant scan, scales with the same index as the data grows.
 
 ## Observability
 
@@ -357,3 +411,27 @@ needed.
 - **PyJWT**.
 - **uv** for dependency management, **ruff** for lint + format, **pytest**
   (+ pytest-asyncio, httpx) for tests.
+
+## With more time
+
+Consolidated follow-ups (several are also flagged inline where they matter):
+
+- **Delivery correctness.** A **transactional outbox** (or a periodic sweeper) to
+  close the enqueue-after-commit gap — today a broker failure after the DB commit
+  leaves a `pending` orphan. A **DLQ** + per-step queues for the pipeline. An
+  **idempotency key** on `external_call` so a redelivered task can't double-submit
+  to the partner.
+- **Metrics & tracing.** Ship the deferred metrics layer
+  ([Next step: metrics](#next-step-metrics-deliberately-deferred)); add APM /
+  distributed traces spanning the DAG; alert on `failed_permanently` and p95
+  breaches; build dashboards.
+- **Auth.** Short-lived access + rotating **refresh tokens** (httpOnly cookie or
+  secure store) and token revocation — today it's access-token only.
+- **Storage.** Swap `LocalFileStorage` for **object storage** (S3/GCS) behind the
+  existing `FileStorage` Protocol; presigned direct uploads for large files.
+- **Webhook hardening.** Request body-size cap, per-partner rate limiting, and
+  **replay protection** (reject a stale `occurred_at` / a seen nonce); per-partner
+  secrets instead of one shared HMAC key.
+- **Ops.** Run migrations as a dedicated job/init-container once per rollout, not on
+  every replica start; PgBouncer + read replicas as load grows (see
+  [Scaling](#scaling-to-the-target)).
