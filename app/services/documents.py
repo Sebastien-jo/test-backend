@@ -10,15 +10,19 @@ import uuid
 from collections.abc import Awaitable, Callable, Sequence
 from typing import TYPE_CHECKING
 
+import structlog
 from fastapi import UploadFile
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import joinedload, selectinload
 
 from app.core.config import settings
+from app.core.logging import get_logger
 from app.models import Document, ProcessingStep
 from app.services.status import DocumentStatus, StepName, StepStatus
 from app.services.storage import FileStorage, sanitize_filename
+
+log = get_logger("documents")
 
 if TYPE_CHECKING:
     # Type-only import: the service reads attributes off CurrentUser but never
@@ -91,6 +95,15 @@ async def create_document(
         raise
 
     await db.refresh(document)
+
+    structlog.contextvars.bind_contextvars(document_id=str(document.id))
+    log.info(
+        "upload accepted",
+        filename=original_filename,
+        size_bytes=len(content),
+        organization_id=str(current_user.organization_id),
+    )
+
     await enqueue(document.id)
     return document
 

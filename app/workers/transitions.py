@@ -6,7 +6,6 @@ recomputes the document's derived status. Keeping it the *only* writer means the
 real-time phase (phase 7) has exactly one place to hook event publishing.
 """
 
-import logging
 import uuid
 from datetime import UTC, datetime
 from typing import Any
@@ -14,6 +13,7 @@ from typing import Any
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from app.core.logging import get_logger
 from app.events import publisher
 from app.models import Document, ProcessingStep, StepAttempt
 from app.services.status import (
@@ -25,7 +25,7 @@ from app.services.status import (
 )
 from app.workers.redis import redis_client
 
-logger = logging.getLogger(__name__)
+log = get_logger("transitions")
 
 
 def load_step(session: Session, document_id: uuid.UUID, step_name: StepName) -> ProcessingStep:
@@ -82,11 +82,12 @@ def transition_step(
     elif not is_valid_transition(step.status, to_status):
         # Illegal move (race/redelivery, e.g. a laggard retry after completion):
         # log and skip. Not counted as an attempt — the work will not run here.
-        logger.warning(
-            "Ignoring illegal step transition (race/redelivery): %s %s -> %s",
-            step_name,
-            step.status,
-            to_status,
+        # This WARNING is the visible signal of at-least-once delivery in action.
+        log.warning(
+            "illegal step transition ignored",
+            step=str(step_name),
+            from_status=str(step.status),
+            to_status=str(to_status),
         )
     else:
         now = datetime.now(UTC)

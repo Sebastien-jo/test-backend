@@ -1,19 +1,20 @@
 """Partner webhook processing: audit, correlate, apply the result."""
 
 import json
-import logging
 from typing import Any
 
+import structlog
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.schemas import PartnerWebhookPayload
+from app.core.logging import get_logger
 from app.core.redis import redis_client
 from app.events import publisher
 from app.models import Document, WebhookEvent
 from app.services.status import DocumentStatus
 
-logger = logging.getLogger(__name__)
+log = get_logger("webhook")
 
 
 def _lenient_parse(raw_body: bytes) -> tuple[str, dict[str, Any]]:
@@ -41,19 +42,25 @@ async def record_event(db: AsyncSession, *, raw_body: bytes, signature_valid: bo
 
 async def process_webhook(db: AsyncSession, payload: PartnerWebhookPayload) -> None:
     """Correlate the (verified) payload to its document and apply the result."""
+    structlog.contextvars.bind_contextvars(job_id=payload.job_id)
     document = await db.scalar(
         select(Document).where(Document.partner_job_id == payload.job_id).with_for_update()
     )
     if document is None:
+        log.info("webhook received", signature_valid=True, outcome="unknown_job")
         return
 
+    structlog.contextvars.bind_contextvars(document_id=str(document.id))
     changed = _apply_partner_result(document, payload.status)
     await db.commit()
 
     if changed:
+        log.info("webhook received", signature_valid=True, outcome="processed")
         await publisher.publish_document_update(
             redis_client, document.id, document_status=document.status
         )
+    else:
+        log.info("webhook received", signature_valid=True, outcome="duplicate")
 
 
 def _apply_partner_result(document: Document, partner_status: str) -> bool:
@@ -64,7 +71,6 @@ def _apply_partner_result(document: Document, partner_status: str) -> bool:
     it decides the failed-then-completed ordering — once terminal, we don't flip.
     """
     if document.status in (DocumentStatus.READY, DocumentStatus.FAILED):
-        logger.info("Webhook no-op: document %s already %s", document.id, document.status)
         return False
     document.status = (
         DocumentStatus.READY if partner_status == "completed" else DocumentStatus.FAILED

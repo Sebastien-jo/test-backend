@@ -18,6 +18,8 @@ dependencies = [
     "celery[redis]>=5.5",
     # Sync Postgres driver for the Celery workers (separate from the app's asyncpg).
     "psycopg[binary]>=3.2",
+    # Structured JSON logging, shared by API and worker.
+    "structlog>=25.1",
 ]
 
 [dependency-groups]

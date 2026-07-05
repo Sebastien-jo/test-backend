@@ -1,22 +1,27 @@
 """Server-Sent Events: real-time document status."""
 
 import json
+import time
 import uuid
 from collections.abc import AsyncIterator
 from datetime import UTC, datetime
 from typing import Annotated, Any
 
+import structlog
 from fastapi import APIRouter, Depends, HTTPException, status
 from fastapi.responses import StreamingResponse
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.deps import CurrentUser, CurrentUserDep
 from app.core.db import SessionFactory, get_db
+from app.core.logging import get_logger
 from app.core.redis import redis_client
 from app.events.publisher import channel, seq_key
 from app.models import Document
 from app.services import documents as documents_service
 from app.services.status import DocumentStatus
+
+log = get_logger("sse")
 
 router = APIRouter(tags=["events"])
 
@@ -76,21 +81,32 @@ async def _pubsub_messages(pubsub: Any) -> AsyncIterator[dict[str, Any] | None]:
 
 
 async def _event_source(document_id: uuid.UUID, current_user: CurrentUser) -> AsyncIterator[str]:
+    structlog.contextvars.bind_contextvars(document_id=str(document_id))
     pubsub = redis_client.pubsub()
     await pubsub.subscribe(channel(document_id))
+    started = time.perf_counter()
+    log.info("sse connection opened")
+    reason = "client_disconnect"
     try:
         boundary = int(await redis_client.get(seq_key(document_id)) or 0)
         async with SessionFactory() as session:
             document = await documents_service.get_document(session, current_user, document_id)
         if document is None:
-            return  # deleted between the access check and now
+            reason = "not_found"
+            return
         async for chunk in _sse_stream(
             _snapshot_event(document, boundary), boundary, _pubsub_messages(pubsub)
         ):
             yield chunk
+        reason = "terminal"
     finally:
         # Client disconnect cancels this generator -> unsubscribe + close, so no
         # leaked asyncio task or Redis subscription.
+        log.info(
+            "sse connection closed",
+            reason=reason,
+            duration_seconds=round(time.perf_counter() - started, 2),
+        )
         await pubsub.unsubscribe(channel(document_id))
         await pubsub.aclose()
 
