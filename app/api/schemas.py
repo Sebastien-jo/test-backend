@@ -43,6 +43,19 @@ class DocumentDetailResponse(BaseModel):
     created_at: datetime
     updated_at: datetime
     steps: list[StepSchema]
+    # Convenience flag for clients: true once GET /{id}/results will return 200.
+    results_available: bool
+
+
+class DocumentResultsResponse(BaseModel):
+    """Aggregated extracted data — only returned once the document is `ready`."""
+
+    document_id: uuid.UUID
+    status: DocumentStatus  # always `ready` when this schema is returned
+    ocr_text: str
+    metadata: dict[str, Any]
+    chunks: list[Any]
+    partner: dict[str, Any] | None
 
 
 class DocumentListItem(BaseModel):
