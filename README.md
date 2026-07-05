@@ -116,10 +116,23 @@ All endpoints require a bearer token and are scoped to the caller's org.
   widen as more formats are ingested.
 - `GET /documents/{id}` — detail with steps; status is **derived** via
   `status.py`. Missing *or* another org's document → **404** (never 403 — don't
-  reveal another tenant's resources).
+  reveal another tenant's resources). Carries `results_available` (true once the
+  results endpoint returns 200).
+- `GET /documents/{id}/results` — the extracted data, **gated on completion** (the
+  brief's "once processing is finished"). Only a `ready` document returns **200**
+  with the aggregate: `ocr_text` / `metadata` / `chunks` (the three steps'
+  `result`s) plus `partner` (the `result` of the webhook that validated it). A
+  non-terminal *or* `failed` document → **409 Conflict** `{status, detail}` — the
+  resource exists but its state forbids the read (404 would be a lie; no partial
+  results, the brief gates on completion). Missing/other-org → **404**. One query
+  for the document + steps, one for the partner event — no N+1.
 - `GET /documents` — org's documents, `created_at DESC`, `limit`/`offset`
   (default 20, max 100); each item: filename, uploader email, derived status.
   Uploader joined + steps selectin-loaded (no N+1).
+
+Together these cover the brief's four needs: **upload** (`POST`), **track**
+(`GET /{id}` + [SSE](#real-time-tracking-sse)), **retrieve results**
+(`GET /{id}/results`), and **list** (`GET /documents`).
 
 **Tenant isolation:** `organization_id` comes from the token; every query filters
 on it, and storage keys are `{org_id}/{doc_id}/{filename}`.
@@ -135,8 +148,14 @@ Upload enqueues a Celery DAG (the document stays `pending` until it runs):
 chain( ocr, chord( group(metadata, chunking), external_call ) )
 ```
 `ocr` first; `metadata`/`chunking` in parallel; `external_call` last → the
-document reaches `waiting_partner` (the inbound webhook that flips it to `ready`
-is the next phase).
+document reaches `waiting_partner`, then the inbound webhook flips it to `ready`.
+
+**The partner.** `external_call` submits the
+extracted `ocr`/`metadata`/`chunks` to an external **compliance provider** that
+screens the document (e.g. AML/KYC and sanctions checks) before it can be
+published. The provider works **asynchronously**: it returns an opaque `job_id`
+immediately (→ `waiting_partner`) and later notifies the verdict via a signed
+webhook (→ `ready`, or `failed`) — see [Partner webhook](#partner-webhook).
 
 - **Why Celery:** native retries + exponential backoff and `chord` for the
   metadata/chunking fan-in — orchestration we'd otherwise hand-roll. It's also
@@ -202,6 +221,9 @@ document from `waiting_partner` to `ready` (or `failed`).
    `X-Partner-Signature` header → `200`. (Signed over raw bytes, so the two bodies
    must be byte-identical — copy the same JSON into both; don't re-edit it.)
 4. `GET /documents/{id}` → **`ready`**. (Re-POST the same → still `ready`.)
+5. `GET /documents/{id}/results` → **200** with `ocr_text` / `metadata` /
+   `chunks` / `partner`. (Before step 4 the same call returns **409** with the
+   current status.)
 
 `/dev/sign-webhook` is gated by `DEV_ENDPOINTS_ENABLED` (true in compose) and
 **must be false in production** — it's a signature oracle.
