@@ -31,5 +31,8 @@ class Settings(BaseSettings):
     celery_result_backend: str = "redis://redis:6379/1"
     celery_worker_concurrency: int = 32
 
+    # Enables the dev-only /dev/sign-webhook helper. MUST be false in production:
+    dev_endpoints_enabled: bool = True
+
 
 settings = Settings()

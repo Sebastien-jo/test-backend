@@ -23,7 +23,6 @@ from app.services.documents import (
     FileTooLargeError,
     PipelineEnqueuer,
     UnsupportedFileTypeError,
-    compute_status,
 )
 from app.services.status import StepStatus
 from app.services.storage import FileStorage, get_storage
@@ -83,7 +82,7 @@ async def get_document(
     return DocumentDetailResponse(
         id=document.id,
         filename=document.filename,
-        status=compute_status(document),
+        status=document.status,
         created_at=document.created_at,
         updated_at=document.updated_at,
         steps=[
@@ -127,7 +126,7 @@ async def list_documents(
             DocumentListItem(
                 id=document.id,
                 filename=document.filename,
-                status=compute_status(document),
+                status=document.status,
                 uploader_email=document.uploader.email,
                 created_at=document.created_at,
             )
