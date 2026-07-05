@@ -4,6 +4,8 @@ No FastAPI/DB dependencies here — pure functions over strings and ids, so this
 module is unit-testable in isolation.
 """
 
+import hashlib
+import hmac
 import uuid
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
@@ -19,6 +21,23 @@ from app.core.config import settings
 _password_hasher = PasswordHasher()
 
 _ALGORITHM = "HS256"
+
+
+def compute_partner_signature(body: bytes) -> str:
+    """HMAC-SHA256 of the exact request body, hex-encoded, keyed on the shared secret."""
+    return hmac.new(settings.partner_hmac_secret.encode(), body, hashlib.sha256).hexdigest()
+
+
+def verify_partner_signature(body: bytes, signature: str) -> bool:
+    """Constant-time check of an inbound partner signature against the raw body.
+
+    `body` MUST be the exact bytes received (never a re-serialized JSON) — any
+    whitespace or key-order difference changes the HMAC. Returns False for a
+    missing signature; uses `compare_digest` to avoid timing side channels.
+    """
+    if not signature:
+        return False
+    return hmac.compare_digest(compute_partner_signature(body), signature)
 
 
 def hash_password(password: str) -> str:

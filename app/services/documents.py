@@ -17,12 +17,7 @@ from sqlalchemy.orm import joinedload, selectinload
 
 from app.core.config import settings
 from app.models import Document, ProcessingStep
-from app.services.status import (
-    DocumentStatus,
-    StepName,
-    StepStatus,
-    derive_document_status,
-)
+from app.services.status import DocumentStatus, StepName, StepStatus
 from app.services.storage import FileStorage, sanitize_filename
 
 if TYPE_CHECKING:
@@ -51,16 +46,6 @@ class UnsupportedFileTypeError(DocumentError):
 
 
 _PDF_MAGIC = b"%PDF-"
-
-
-def compute_status(document: Document) -> DocumentStatus:
-    """Derive the document status from its steps (single source of truth).
-
-    Webhook processing arrives in a later phase, so `webhook_received` is always
-    False here — a freshly uploaded document cannot yet be READY.
-    """
-    steps = {step.name: step.status for step in document.steps}
-    return derive_document_status(steps, webhook_received=False)
 
 
 async def create_document(

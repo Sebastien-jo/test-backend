@@ -70,9 +70,11 @@ execution — race-free under at-least-once, unlike a single `error` column). Th
 step keeps only its summary status/attempts; the API surfaces the full history
 and, for a *failed* step, its last error.
 
-The document status is **derived**, never stored as truth by the ORM: the state
-machine in [`app/services/status.py`](app/services/status.py) (pure, no DB/HTTP —
-exhaustively unit-tested) is the single source of the pipeline rules.
+The document status is **computed by the state machine** in
+[`app/services/status.py`](app/services/status.py) (pure, no DB/HTTP —
+exhaustively unit-tested) and **persisted** on the document by the transition
+helpers (worker on each step change; webhook on partner confirmation). Endpoints
+read that stored value — always current because `status.py` is its only writer.
 
 **Webhook dedup:** `webhook_events` is an append-only audit trail, so `job_id`
 is indexed but **not unique** — a partner may legitimately re-POST the same
@@ -168,6 +170,41 @@ terminal steps are skipped, a terminal outcome (`done`/`failed`) is authoritativ
 from any active state so a success is never dropped, and any remaining illegal
 move (e.g. a laggard retry after completion) is a logged no-op rather than a hard
 error that would break the chord.
+
+## Partner webhook
+
+`POST /webhooks/partner` receives the partner's async notification and flips the
+document from `waiting_partner` to `ready` (or `failed`).
+
+- **Auth = the signature.** No JWT (the caller is the partner, not a user). The
+  `X-Partner-Signature` must be `HMAC-SHA256(raw_body, PARTNER_HMAC_SECRET)`,
+  verified over the **exact received bytes** (never a re-parsed JSON — any
+  whitespace/key-order change breaks it) with a constant-time compare. Missing or
+  wrong → **401**, no hint which.
+- **Opaque + no enumeration.** Every request is audited in `webhook_events`
+  first (valid or not). A valid signature always returns `200 {"status":"received"}`
+  — known, unknown, or duplicate job_id (never 404, so outsiders can't probe which
+  job_ids exist; an early notification is simply logged for investigation). Valid
+  signature but malformed body → **422**.
+- **Idempotent.** A partner retry re-POSTs the same job_id; terminal stays
+  terminal, so the second delivery is a logged no-op (decided on document state,
+  not an event count).
+
+### Test it from Swagger in ~30s
+
+1. Upload a document and poll `GET /documents/{id}` until it's `waiting_partner`.
+   Grab its `partner_job_id` (`docker compose exec db psql -U primmo -d primmo -c
+   "select partner_job_id from documents"`).
+2. `POST /dev/sign-webhook` with the JSON
+   `{"job_id":"<partner_job_id>","status":"completed"}` → copy `signature` from the
+   response.
+3. `POST /webhooks/partner`: send the **same** JSON body, put `signature` in the
+   `X-Partner-Signature` header → `200`. (Signed over raw bytes, so the two bodies
+   must be byte-identical — copy the same JSON into both; don't re-edit it.)
+4. `GET /documents/{id}` → **`ready`**. (Re-POST the same → still `ready`.)
+
+`/dev/sign-webhook` is gated by `DEV_ENDPOINTS_ENABLED` (true in compose) and
+**must be false in production** — it's a signature oracle.
 
 ## Testing & CI
 

@@ -2,6 +2,7 @@
 
 import uuid
 from datetime import datetime
+from typing import Any
 
 from pydantic import BaseModel
 
@@ -56,3 +57,30 @@ class DocumentListResponse(BaseModel):
     items: list[DocumentListItem]
     limit: int
     offset: int
+
+
+class PartnerWebhookPayload(BaseModel):
+    """Inbound partner notification (parsed only after the signature is verified)."""
+
+    job_id: str
+    status: str  # "completed" -> ready; anything else -> failed
+    result: dict[str, Any] | None = None
+    occurred_at: datetime | None = None
+
+
+# Example payload (matches docs/ASSIGNMENT.md), shared by the webhook endpoint and
+# the dev signer so their /docs examples stay identical.
+PARTNER_WEBHOOK_EXAMPLE = {
+    "job_id": "j_abc123def4567890",
+    "status": "completed",
+    "result": {"indexed_at": "2026-05-21T14:23:11Z"},
+    "occurred_at": "2026-05-21T14:23:11Z",
+}
+
+
+class WebhookReceivedResponse(BaseModel):
+    status: str = "received"
+
+
+class SignWebhookResponse(BaseModel):
+    signature: str  # send this in X-Partner-Signature with the same body
