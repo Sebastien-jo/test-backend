@@ -14,13 +14,16 @@ from typing import Any
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from app.events import publisher
 from app.models import Document, ProcessingStep, StepAttempt
 from app.services.status import (
+    DocumentStatus,
     StepName,
     StepStatus,
     derive_document_status,
     is_valid_transition,
 )
+from app.workers.redis import redis_client
 
 logger = logging.getLogger(__name__)
 
@@ -67,6 +70,7 @@ def transition_step(
     ).scalar_one()
 
     dirty = False
+    status_changed = False
 
     if step.status == to_status:
         # No state change. But a re-entering execution that finds the step already
@@ -96,6 +100,7 @@ def transition_step(
         if result is not None:
             step.result = result
         dirty = True
+        status_changed = True
 
     # Append-only history: every execution outcome gets its own row, so all errors
     # are kept (not just the last). Recorded even when the status transition above
@@ -112,13 +117,24 @@ def transition_step(
         )
         dirty = True
 
+    document_status: DocumentStatus | None = None
     if dirty:
-        _refresh_document_status(session, document_id)
+        document_status = _refresh_document_status(session, document_id)
         session.commit()
+
+    if status_changed and document_status is not None:
+        publisher.publish_step_update(
+            redis_client,
+            document_id,
+            step_name=step_name,
+            step_status=step.status,
+            attempts=step.attempts,
+            document_status=document_status,
+        )
     return step
 
 
-def _refresh_document_status(session: Session, document_id: uuid.UUID) -> None:
+def _refresh_document_status(session: Session, document_id: uuid.UUID) -> DocumentStatus:
     """Persist the derived document status. Rule stays in status.py; DB reflects.
 
     Locks the document row so the concurrent metadata/chunking transitions can't
@@ -133,6 +149,6 @@ def _refresh_document_status(session: Session, document_id: uuid.UUID) -> None:
         .all()
     )
     mapping = {step.name: step.status for step in steps}
-    # No inbound webhook in this phase, so a completed pipeline stops at
-    # waiting_partner (external_call done, partner confirmation pending).
+    # The pipeline never sets `ready`; that only comes from the partner webhook.
     document.status = derive_document_status(mapping, webhook_received=False)
+    return document.status
