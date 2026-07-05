@@ -17,8 +17,11 @@ from app.api.schemas import (
     WebhookReceivedResponse,
 )
 from app.core.db import get_db
+from app.core.logging import get_logger
 from app.core.security import verify_partner_signature
 from app.services import webhooks as webhooks_service
+
+log = get_logger("webhook")
 
 router = APIRouter(prefix="/webhooks", tags=["webhooks"])
 
@@ -54,11 +57,14 @@ async def partner_webhook(
     await webhooks_service.record_event(db, raw_body=raw_body, signature_valid=signature_valid)
 
     if not signature_valid:
+        # Never log the signature itself, only that verification failed.
+        log.warning("webhook signature invalid")
         raise HTTPException(status.HTTP_401_UNAUTHORIZED, "Invalid signature")
 
     try:
         payload = PartnerWebhookPayload.model_validate_json(raw_body)
     except ValidationError:
+        log.warning("webhook malformed")
         raise HTTPException(status.HTTP_422_UNPROCESSABLE_CONTENT, "Invalid payload") from None
 
     await webhooks_service.process_webhook(db, payload)

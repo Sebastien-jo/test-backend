@@ -34,5 +34,10 @@ class Settings(BaseSettings):
     # Enables the dev-only /dev/sign-webhook helper. MUST be false in production:
     dev_endpoints_enabled: bool = True
 
+    service_name: str = "docpipe-api"
+    environment: str = "dev"
+    log_format: str = "console"
+    log_level: str = "INFO"
+
 
 settings = Settings()

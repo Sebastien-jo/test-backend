@@ -33,10 +33,16 @@ services:
     build: .
     # Thread pool: the mocked steps are time.sleep (IO-bound-like), so a thread
     # pool holds far more concurrent tasks than prefork at equal memory.
+    # --quiet (a global option, before `worker`) suppresses Celery's ASCII startup
+    # banner — printed straight to stdout, bypassing logging — so worker output is
+    # a single JSON stream. Task logs still honor --loglevel.
     command: >-
-      celery -A app.workers.celery_app worker
+      celery -A app.workers.celery_app --quiet worker
       --pool=threads --concurrency=${CELERY_WORKER_CONCURRENCY:-32} --loglevel=info
     env_file: .env
+    # Distinguishes worker logs/metrics from the API's (Datadog `service` tag).
+    environment:
+      SERVICE_NAME: docpipe-worker
     volumes:
       - ./app:/app/app
     healthcheck:

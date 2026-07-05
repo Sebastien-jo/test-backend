@@ -42,8 +42,8 @@ Other targets: `make down`, `make logs`, `make test`, `make lint`, `make format`
 
 ```
 app/
-  api/       # routers (health, auth, documents), deps.py, schemas.py
-  core/      # config, async DB session, Redis client, security (hashing + JWT)
+  api/       # routers (health, auth, documents), deps.py, schemas.py, middleware.py
+  core/      # config, async DB session, Redis client, security, logging
   models/    # SQLAlchemy models (organizations, users, documents, steps, webhooks)
   services/  # logic — status.py (state machine), documents.py, storage.py, webhooks.py
   workers/   # Celery pipeline — celery_app, steps (mocks), pipeline, transitions
@@ -232,6 +232,80 @@ warning and never fails the pipeline or webhook; the client resyncs from the DB.
 **Scale.** Each SSE connection costs a coroutine + a Redis subscription — cheap;
 one async uvicorn process holds thousands, so 5k concurrent viewers fit in a
 handful of API replicas.
+
+## Observability
+
+Production-grade **structured logging**, added as a **pure side layer**: remove
+it and the application behaves identically — no request, task, or SSE stream can
+be broken by a log line. (Metrics are the deliberate next step — see below.)
+
+### Structured logging
+
+**structlog**, one JSON line per event on **stdout** (the container convention —
+the platform collects stdout, no files). Fields follow Datadog naming
+(`service`, `env`, `status`) so the agent ingests them untouched, but nothing
+depends on Datadog to run. `LOG_FORMAT=console` (the local default) renders a
+colored, human-readable line instead; `LOG_FORMAT=json` is production. The API
+and the worker share the same config, and stdlib loggers (uvicorn, celery,
+sqlalchemy) are routed through the same pipeline — one format, no mix.
+
+**Correlation is the backbone.** A `request_id` (short UUID, or an inbound
+`X-Request-ID`) is bound to the log context per request and echoed back as
+`X-Request-ID`. It then rides into Celery via the task headers, so **one grep
+follows an upload from the HTTP call to the last task of the DAG**:
+
+```console
+$ docker compose logs worker | grep 28c6cc9ad03b
+{"event":"task started","step":"ocr","request_id":"28c6cc9ad03b","attempt":1,...}
+{"event":"task finished","step":"ocr","outcome":"SUCCESS","duration_ms":7990.18,...}
+{"event":"task started","step":"metadata","request_id":"28c6cc9ad03b",...}   # ‖ chunking
+{"event":"step retry scheduled","step":"metadata","error_type":"ValueError","retry_in_seconds":1,...}
+{"event":"task started","step":"external_call","request_id":"28c6cc9ad03b",...}
+```
+
+`document_id`, `task_id`, `step`, and (in the webhook) `job_id` are bound the
+same way. Three representative lines:
+
+```json
+{"event":"upload accepted","filename":"deed.pdf","size_bytes":48213,"organization_id":"…","request_id":"28c6cc9ad03b","document_id":"1b61ccb9…","service":"docpipe-api","status":"info","timestamp":"2026-07-05T13:38:14Z"}
+{"event":"step retry scheduled","step":"ocr","attempt":1,"error_type":"TimeoutError","error":"OCR provider timeout","retry_in_seconds":1,"request_id":"ca66290611fc","service":"docpipe-worker","status":"warning","timestamp":"…"}
+{"event":"webhook received","outcome":"processed","signature_valid":true,"job_id":"j_6a80f1b1…","document_id":"1b61ccb9…","service":"docpipe-api","status":"info","timestamp":"…"}
+```
+
+**Never logged:** passwords, hashes, JWTs, the HMAC secret, signatures, or file
+contents. Webhook payloads already live in the DB audit trail — not duplicated in
+logs. A login logs `user_id`/`org` on success and only the `email` on failure; an
+invalid webhook signature logs *that it failed*, never the signature.
+
+### Next step: metrics (deliberately deferred)
+
+Logging ships now because it's **fully verifiable without any external
+account** — the tests above assert correlation and secret-redaction, and the
+JSON stream is inspectable locally. Metrics are the natural next layer, but a
+StatsD/DogStatsD (or Prometheus) pipeline can only be validated end-to-end
+against a running collector (a Datadog agent/account, a Prometheus scrape).
+Shipping an emitter we can't exercise past "the call didn't raise" is a poor
+tradeoff, so it's scoped as follow-up rather than added blind.
+
+The intended design: a thin best-effort `increment`/`histogram`/`gauge` module
+(one system, not two), emitted from the **same hooks that already log** — so no
+new code paths, just an extra sink. Concretely:
+
+- **Pipeline:** step `duration_ms` (tags `step`, `outcome`) and `retries`;
+  `failed_permanently` (`step`, `error_type`) — *where* it breaks; document
+  `duration_ms` for **upload→waiting_partner vs the < 2 min p95 target**, and a
+  `completed` counter (`final_status`) for throughput.
+- **API:** request `duration_ms` + `count` (tags `method`, route **template**,
+  `status_class`) for latency and error rate.
+- **Webhook:** `received` counter by `outcome`; **SSE:** open-connections gauge;
+  **uploads:** counter per `org`.
+
+Step durations would reuse the persisted `started_at`/`finished_at` (no parallel
+stopwatch). Wiring in production is one setting — point the client at the agent —
+and tag cardinality (templated routes, bounded `org`) is the thing to watch.
+
+**Beyond that:** APM / distributed traces spanning the DAG end-to-end, alerting
+on `failed_permanently` and p95 breaches, and prebuilt dashboards.
 
 ## Testing & CI
 

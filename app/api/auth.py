@@ -11,8 +11,11 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.deps import CurrentUserDep
 from app.core.db import get_db
+from app.core.logging import get_logger
 from app.core.security import create_access_token, hash_password, verify_password
 from app.models import User
+
+log = get_logger("auth")
 
 router = APIRouter(prefix="/auth", tags=["auth"])
 
@@ -48,6 +51,8 @@ async def login(
     hashed = user.hashed_password if user is not None else _DUMMY_HASH
     password_ok = verify_password(form.password, hashed)
     if user is None or not password_ok:
+        # Email only — never the password/hash — and only on the failure path.
+        log.warning("login failed", email=form.username)
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Incorrect email or password",
@@ -55,6 +60,7 @@ async def login(
         )
 
     token = create_access_token(user_id=user.id, organization_id=user.organization_id)
+    log.info("login succeeded", user_id=str(user.id), organization_id=str(user.organization_id))
     return TokenResponse(access_token=token)
 
 
