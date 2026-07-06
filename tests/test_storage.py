@@ -30,7 +30,6 @@ async def test_local_storage_roundtrip(tmp_path: Path) -> None:
 
     await storage.save(key, b"hello")
     assert (tmp_path / key).read_bytes() == b"hello"
-    assert await storage.open(key) == b"hello"
 
     await storage.delete(key)
     assert not (tmp_path / key).exists()

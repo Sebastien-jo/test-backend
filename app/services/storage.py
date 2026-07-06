@@ -19,8 +19,6 @@ class FileStorage(Protocol):
 
     async def save(self, key: str, content: bytes) -> None: ...
 
-    async def open(self, key: str) -> bytes: ...
-
     async def delete(self, key: str) -> None: ...
 
 
@@ -60,10 +58,6 @@ class LocalFileStorage:
     async def save(self, key: str, content: bytes) -> None:
         path = self._resolve(key)
         await anyio.to_thread.run_sync(self._write_sync, path, content)
-
-    async def open(self, key: str) -> bytes:
-        path = self._resolve(key)
-        return await anyio.to_thread.run_sync(path.read_bytes)
 
     async def delete(self, key: str) -> None:
         path = self._resolve(key)
